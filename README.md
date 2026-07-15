@@ -1,74 +1,92 @@
 # QQQShare
 
-설치 없이 실행하는 임시 LAN 파일 공유 앱입니다. 한 PC에서 QQQShare를 실행하면 같은 Wi-Fi의 PC·Mac·모바일은 브라우저로 접속할 수 있습니다. 기본 공개시간은 1분이며 만료된 파일은 웹에서 즉시 차단된 뒤 비공개 보관함으로 이동합니다.
+**사람과 AI를 위한 만료형 아티팩트 교환 도구**
 
-## 사용자 실행
+Publish. Verify. Expire.
 
-Windows는 `QQQShare.exe`, macOS는 `QQQShare.app`을 실행하세요. 브라우저가 자동으로 열리며 다음 형태의 주소가 표시됩니다.
+QQQShare는 로컬 파일을 같은 네트워크에서 잠시 받을 수 있는 읽기 전용 URL로 게시합니다. 계정이나 클라우드 업로드 없이 동작하며, 설정한 시간이 지나면 공유가 자동 종료됩니다.
 
-```text
-192.168.0.28:46327/qqq
-```
+## 포터블 앱 사용법
 
-`주소 복사` 버튼은 임의 접근 토큰이 포함된 전체 URL을 복사합니다. 앱 실행마다 포트와 토큰이 변경됩니다.
+1. Releases에서 Windows ZIP을 받고 압축을 풉니다.
+2. `QQQShare.exe`를 실행합니다.
+3. 자동으로 열린 소유자 화면에 파일을 놓습니다.
+4. 주소를 복사하거나 QR 코드를 휴대폰으로 스캔합니다.
+5. 같은 Wi-Fi의 다른 기기에서 파일을 받습니다.
 
-데이터 위치:
+받는 사람은 조회와 다운로드만 할 수 있습니다. 업로드, 공유 시간 변경, 파일 폐기, 전체 종료는 실행한 PC의 소유자 화면에서만 가능합니다.
 
-- Windows: `%LOCALAPPDATA%\QQQShare\Shared`, `%LOCALAPPDATA%\QQQShare\Expired`
-- macOS: `~/Library/Application Support/QQQShare/Shared`, `Expired`
+> Windows 방화벽 질문이 표시되면 동일한 사설 네트워크에서 사용할 때만 `개인 네트워크`를 허용하세요. 공용 Wi-Fi에서는 사용하지 않는 것을 권장합니다.
 
-## CLI 옵션
-
-### AI/에이전트 MVP
+## AI·CLI 사용법
 
 ```powershell
-QQQShare.exe publish --expires 5m --json .\dist
+# 파일 또는 폴더를 5분간 게시 (`ownerUrl`은 외부에 공유하지 마세요)
+QQQShare.exe publish --expires 5m --json .\report.pdf .\results
+
+# 다른 기기/에이전트에서 메타데이터 확인
 QQQShare.exe inspect --json "http://192.168.0.28:46327/qqq?t=..."
+
+# 다운로드 후 SHA-256 검증
 QQQShare.exe receive --output .\received --json "http://192.168.0.28:46327/qqq?t=..."
+
+# 게시 프로세스 즉시 종료
+QQQShare.exe revoke --json "http://127.0.0.1:46327/qqq?t=OWNER_TOKEN"
 ```
 
-- `publish`: 파일을 안전한 스테이징 폴더로 복사하고, 폴더는 ZIP으로 만든 뒤 백그라운드 게시
-- `inspect`: 다운로드 전 파일명·크기·SHA-256·만료시간 확인
-- `receive`: `.part`로 다운로드하고 SHA-256 검증 성공 후 최종 파일로 변경
-- `--json`: MCP, Skill, npm/pip 래퍼가 읽을 수 있는 안정적인 JSON 반환
+`publish --json` 결과 예시:
 
-MVP의 `inspect`와 `receive`는 SSRF 방어를 위해 사설 LAN 또는 localhost IP 주소만 허용합니다.
+```json
+{
+  "schema": "qqqshare-publish/v1",
+  "artifactId": "art_example",
+  "url": "http://192.168.0.28:46327/qqq?t=READ_ONLY_TOKEN",
+  "ownerUrl": "http://127.0.0.1:46327/qqq?t=OWNER_TOKEN",
+  "scope": "lan",
+  "expiresAt": 1784097000000
+}
+```
+
+- `url`: 전달 가능한 읽기 전용 URL
+- `ownerUrl`: 로컬 폐기용 관리 URL. 채팅이나 로그에 공유하지 마세요.
+- `scope`: 현재 MVP는 `lan`만 지원
+- 공유 시간: `1s`부터 `24h`
+- 폴더: 게시 전에 ZIP으로 묶음
+- 수신: 임시 `.part` 파일에 저장하고 SHA-256 검증 후 완료
+
+## 데스크톱 서버 옵션
 
 ```text
-QQQShare --expires 5m --port 4177 --dir D:\QQQShare --max-mb 2048
+QQQShare.exe --expires 1m --port 4177 --dir D:\QQQShare --max-mb 2048 --no-open
 ```
 
-- `--expires`: 기본 공개시간, `1s`~`24h`
-- `--port`: 고정 포트. 생략하면 OS가 빈 랜덤 포트를 선택
-- `--dir`: 데이터 폴더 재정의
-- `--max-mb`: 파일 하나의 업로드 한도
-- `--no-open`: 브라우저 자동 실행 안 함
-- `--token`: 자동화 테스트용 고정 토큰
+포트를 생략하면 실행할 때마다 빈 랜덤 포트를 사용합니다. 기본 데이터 경로:
+
+- Windows: `%LOCALAPPDATA%\QQQShare\Shared`, `Expired`
+- macOS: `~/Library/Application Support/QQQShare/Shared`, `Expired`
+
+## 보안 모델
+
+- 인터넷이 아닌 같은 LAN의 사설 IPv4 주소만 AI 수신 명령에서 허용
+- 실행마다 소유자 토큰과 읽기 전용 공유 토큰을 별도로 생성
+- API 응답, 페이지, QR 코드 캐시 금지
+- 만료 또는 수동 폐기 시 `Expired`로 이동하고 신규 다운로드 차단
+- 파일별 SHA-256 제공 및 CLI 수신 검증
+- 현재 전송은 HTTP이므로 신뢰할 수 있는 개인 LAN에서만 사용
+
+자세한 내용과 취약점 신고 방법은 [SECURITY.md](SECURITY.md)를 참고하세요.
 
 ## 개발 및 릴리스
 
-프로젝트 로컬 Go 도구체인으로:
-
 ```powershell
 .tools\go\bin\go.exe test ./...
-.\scripts\release.ps1 -Version 0.2.0
+.\scripts\release.ps1 -Version 0.3.0
 ```
 
-`dist`에 Windows x64/ARM64 포터블 ZIP과 macOS Intel/Apple Silicon 앱 ZIP, SHA-256 체크섬이 만들어집니다.
+GitHub Actions는 태그를 푸시하면 Windows x64/ARM64와 macOS Intel/Apple Silicon 포터블 ZIP 및 체크섬을 Release에 게시합니다.
 
-macOS 공개 배포는 Apple Developer 인증서가 있는 Mac에서 `scripts/sign-macos.sh`로 코드 서명·공증해야 합니다. 서명하지 않은 테스트 빌드는 Gatekeeper 경고가 표시될 수 있습니다.
+## 향후 인터페이스
 
-## 향후 Claude/MCP
+동일한 QQQShare Core 위에 MCP 서버, Claude/Codex Skill, npm/Python 래퍼를 얇게 제공할 예정입니다. 핵심 도구 계약은 `publish`, `inspect`, `receive`, `revoke`입니다.
 
-네이티브 API를 바탕으로 아래 MCP 명령을 제공할 예정입니다.
-
-```text
-create_share(files, expires_in)
-get_share_url(share_id)
-list_active_shares()
-stop_share(share_id)
-```
-
-AI가 파일을 공유하기 전에는 대상 경로, 권한, 만료시간을 사용자에게 확인해야 합니다.
-
-보안 정책은 [SECURITY.md](SECURITY.md)를 참고하세요.
+MIT License

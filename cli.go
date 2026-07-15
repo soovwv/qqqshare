@@ -19,11 +19,13 @@ import (
 )
 
 type artifactInfo struct {
-	Schema    string  `json:"schema"`
-	Files     []*item `json:"files"`
-	FileCount int     `json:"fileCount"`
-	TotalSize int64   `json:"totalSize"`
-	ExpiresAt int64   `json:"expiresAt"`
+	Schema     string  `json:"schema"`
+	ArtifactID string  `json:"artifactId"`
+	Scope      string  `json:"scope"`
+	Files      []*item `json:"files"`
+	FileCount  int     `json:"fileCount"`
+	TotalSize  int64   `json:"totalSize"`
+	ExpiresAt  int64   `json:"expiresAt"`
 }
 
 func cli() (bool, int) {
@@ -37,6 +39,8 @@ func cli() (bool, int) {
 		return true, runInspect(os.Args[2:])
 	case "receive":
 		return true, runReceive(os.Args[2:])
+	case "revoke":
+		return true, runRevoke(os.Args[2:])
 	case "serve":
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 		return false, 0
@@ -52,6 +56,7 @@ func usage() {
   qqqshare publish <files...> [--expires 5m] [--json]
   qqqshare inspect <url> [--json]
   qqqshare receive <url> [--output DIR] [--json]
+  qqqshare revoke <owner-url> [--json]
   qqqshare serve [desktop server options]`)
 }
 
@@ -112,9 +117,10 @@ func runPublish(args []string) int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
 	token := randomToken(18)
+	shareToken := randomToken(18)
 	exe, _ := os.Executable()
 	logFile, _ := os.OpenFile(filepath.Join(root, "server.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	cmd := exec.Command(exe, "serve", "--no-open", "--port", fmt.Sprint(port), "--token", token, "--expires", expiry.String(), "--dir", root, "--max-mb", fmt.Sprint(*maxMB), "--exit-after", (*expiry + 30*time.Second).String())
+	cmd := exec.Command(exe, "serve", "--no-open", "--port", fmt.Sprint(port), "--token", token, "--share-token", shareToken, "--expires", expiry.String(), "--dir", root, "--max-mb", fmt.Sprint(*maxMB), "--exit-after", (*expiry + 30*time.Second).String())
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if e = cmd.Start(); e != nil {
@@ -144,12 +150,45 @@ func runPublish(args []string) int {
 	if list := localAddresses(); len(list) > 0 {
 		ip = list[0]
 	}
-	shareURL := fmt.Sprintf("http://%s:%d/qqq?t=%s", ip, port, token)
-	result := map[string]any{"schema": "qqqshare-publish/v1", "artifactId": id, "url": shareURL, "expiresAt": time.Now().Add(*expiry).UnixMilli()}
+	shareURL := fmt.Sprintf("http://%s:%d/qqq?t=%s", ip, port, shareToken)
+	ownerURL := fmt.Sprintf("http://127.0.0.1:%d/qqq?t=%s", port, token)
+	result := map[string]any{"schema": "qqqshare-publish/v1", "artifactId": id, "url": shareURL, "ownerUrl": ownerURL, "scope": "lan", "expiresAt": time.Now().Add(*expiry).UnixMilli()}
 	if *asJSON {
 		_ = json.NewEncoder(os.Stdout).Encode(result)
 	} else {
 		fmt.Printf("Published %s\nURL: %s\nExpires: %s\n", id, shareURL, time.Now().Add(*expiry).Format(time.RFC3339))
+	}
+	return 0
+}
+
+func runRevoke(args []string) int {
+	set := flag.NewFlagSet("revoke", flag.ContinueOnError)
+	asJSON := set.Bool("json", false, "JSON output")
+	if set.Parse(args) != nil || set.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: qqqshare revoke <owner-url>")
+		return 2
+	}
+	base, token, e := artifactEndpoint(set.Arg(0))
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		return 1
+	}
+	req, _ := http.NewRequest(http.MethodPost, base+"/api/stop?t="+url.QueryEscape(token), nil)
+	r, e := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		return 1
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, r.Status)
+		return 1
+	}
+	result := map[string]any{"schema": "qqqshare-revoke/v1", "revoked": true}
+	if *asJSON {
+		_ = json.NewEncoder(os.Stdout).Encode(result)
+	} else {
+		fmt.Println("Share revoked")
 	}
 	return 0
 }

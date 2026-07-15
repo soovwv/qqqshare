@@ -2,7 +2,9 @@ param([string]$Version = "0.2.0")
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $go = Join-Path $root ".tools\go\bin\go.exe"
-if (-not (Test-Path $go)) { throw "Portable Go toolchain not found at $go" }
+if (-not (Test-Path $go)) {
+  $go = (Get-Command go -ErrorAction Stop).Source
+}
 $dist = Join-Path $root "dist"
 if (Test-Path $dist) { Remove-Item -LiteralPath $dist -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $dist | Out-Null

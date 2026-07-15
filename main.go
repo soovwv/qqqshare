@@ -28,6 +28,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 //go:embed src/web.js assets/favicon.png
@@ -40,18 +42,19 @@ type item struct {
 	CreatedAt int64  `json:"createdAt"`
 	ExpiresAt int64  `json:"expiresAt"`
 	SHA256    string `json:"sha256"`
+	Downloads int64  `json:"downloads"`
 	path      string
 	active    bool
 }
 
 type app struct {
-	mu                           sync.RWMutex
-	root, shared, expired, token string
-	duration                     time.Duration
-	maxUpload                    int64
-	files                        map[string]*item
-	port                         int
-	stop                         context.CancelFunc
+	mu                                            sync.RWMutex
+	root, shared, expired, ownerToken, shareToken string
+	duration                                      time.Duration
+	maxUpload                                     int64
+	files                                         map[string]*item
+	port                                          int
+	stop                                          context.CancelFunc
 }
 
 func randomToken(n int) string {
@@ -78,8 +81,8 @@ func dataRoot(override string) string {
 	return filepath.Join(h, ".qqqshare")
 }
 
-func newApp(root, token string, duration time.Duration, maxMB int64) (*app, error) {
-	a := &app{root: root, shared: filepath.Join(root, "Shared"), expired: filepath.Join(root, "Expired"), token: token, duration: duration, maxUpload: maxMB << 20, files: map[string]*item{}}
+func newApp(root, ownerToken, shareToken string, duration time.Duration, maxMB int64) (*app, error) {
+	a := &app{root: root, shared: filepath.Join(root, "Shared"), expired: filepath.Join(root, "Expired"), ownerToken: ownerToken, shareToken: shareToken, duration: duration, maxUpload: maxMB << 20, files: map[string]*item{}}
 	for _, d := range []string{a.shared, a.expired} {
 		if e := os.MkdirAll(d, 0700); e != nil {
 			return nil, e
@@ -219,7 +222,16 @@ func jsonOut(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
-func (a *app) authorized(r *http.Request) bool { return r.URL.Query().Get("t") == a.token }
+func (a *app) role(r *http.Request) string {
+	t := r.URL.Query().Get("t")
+	if t != "" && t == a.ownerToken {
+		return "owner"
+	}
+	if t != "" && t == a.shareToken {
+		return "reader"
+	}
+	return ""
+}
 
 func page() ([]byte, error) {
 	b, e := embedded.ReadFile("src/web.js")
@@ -256,7 +268,8 @@ func (a *app) handler() http.Handler {
 		jsonOut(w, 200, map[string]any{"ok": true, "version": version})
 	})
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		if !a.authorized(r) {
+		role := a.role(r)
+		if role == "" {
 			jsonOut(w, 403, map[string]string{"error": "Invalid share token"})
 			return
 		}
@@ -264,14 +277,27 @@ func (a *app) handler() http.Handler {
 		case r.Method == "GET" && r.URL.Path == "/api/info":
 			urls := []string{}
 			for _, ip := range localAddresses() {
-				urls = append(urls, fmt.Sprintf("http://%s:%d/qqq?t=%s", ip, a.port, a.token))
+				urls = append(urls, fmt.Sprintf("http://%s:%d/qqq?t=%s", ip, a.port, a.shareToken))
 			}
-			jsonOut(w, 200, map[string]any{"urls": urls})
+			jsonOut(w, 200, map[string]any{"urls": urls, "role": role, "scope": "lan", "version": version})
 		case r.Method == "GET" && r.URL.Path == "/api/files":
 			a.mu.RLock()
 			d := int(a.duration.Seconds())
 			a.mu.RUnlock()
 			jsonOut(w, 200, map[string]any{"duration": d, "files": a.list()})
+		case r.Method == "GET" && r.URL.Path == "/api/qr":
+			ip := "127.0.0.1"
+			if xs := localAddresses(); len(xs) > 0 {
+				ip = xs[0]
+			}
+			png, e := qrcode.Encode(fmt.Sprintf("http://%s:%d/qqq?t=%s", ip, a.port, a.shareToken), qrcode.Medium, 256)
+			if e != nil {
+				jsonOut(w, 500, map[string]string{"error": e.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(png)
 		case r.Method == "GET" && r.URL.Path == "/api/artifact":
 			files := a.list()
 			var total int64
@@ -282,8 +308,12 @@ func (a *app) handler() http.Handler {
 					expires = i.ExpiresAt
 				}
 			}
-			jsonOut(w, 200, map[string]any{"schema": "qqqshare-artifact/v1", "files": files, "fileCount": len(files), "totalSize": total, "expiresAt": expires})
+			jsonOut(w, 200, map[string]any{"schema": "qqqshare-artifact/v1", "artifactId": "live", "scope": "lan", "files": files, "fileCount": len(files), "totalSize": total, "expiresAt": expires})
 		case r.Method == "PUT" && r.URL.Path == "/api/settings":
+			if role != "owner" {
+				jsonOut(w, 403, map[string]string{"error": "Owner token required"})
+				return
+			}
 			var body struct {
 				Duration int `json:"duration"`
 			}
@@ -296,8 +326,26 @@ func (a *app) handler() http.Handler {
 			a.mu.Unlock()
 			jsonOut(w, 200, body)
 		case r.Method == "POST" && r.URL.Path == "/api/upload":
+			if role != "owner" {
+				jsonOut(w, 403, map[string]string{"error": "Owner token required"})
+				return
+			}
 			a.upload(w, r)
+		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/api/files/"):
+			if role != "owner" {
+				jsonOut(w, 403, map[string]string{"error": "Owner token required"})
+				return
+			}
+			if !a.revoke(strings.TrimPrefix(r.URL.Path, "/api/files/")) {
+				jsonOut(w, 404, map[string]string{"error": "File expired or missing"})
+				return
+			}
+			jsonOut(w, 200, map[string]bool{"revoked": true})
 		case r.Method == "POST" && r.URL.Path == "/api/stop":
+			if role != "owner" {
+				jsonOut(w, 403, map[string]string{"error": "Owner token required"})
+				return
+			}
 			jsonOut(w, 200, map[string]bool{"stopping": true})
 			if a.stop != nil {
 				go a.stop()
@@ -353,6 +401,9 @@ func (a *app) download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
+	a.mu.Lock()
+	i.Downloads++
+	a.mu.Unlock()
 	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(i.Name)))
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -360,6 +411,29 @@ func (a *app) download(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": i.Name}))
 	w.Header().Set("Content-Length", strconv.FormatInt(i.Size, 10))
 	_, _ = io.Copy(w, f)
+}
+
+func (a *app) revoke(id string) bool {
+	a.mu.Lock()
+	var target *item
+	for _, i := range a.files {
+		if i.active && i.ID == id {
+			i.active = false
+			target = i
+			break
+		}
+	}
+	a.mu.Unlock()
+	if target == nil {
+		return false
+	}
+	dst := uniquePath(a.expired, target.Name)
+	if e := os.Rename(target.path, dst); e != nil {
+		log.Printf("revoke %q: %v", target.Name, e)
+	} else {
+		target.path = dst
+	}
+	return true
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -441,6 +515,7 @@ func main() {
 	noOpen := flag.Bool("no-open", false, "do not open the browser")
 	exitAfter := flag.Duration("exit-after", 0, "stop server automatically")
 	token := flag.String("token", "", "fixed access token")
+	shareToken := flag.String("share-token", "", "fixed read-only share token")
 	flag.Parse()
 	if *expiry < time.Second || *expiry > 24*time.Hour || *maxMB < 1 {
 		log.Fatal("invalid expiration or upload limit")
@@ -448,7 +523,10 @@ func main() {
 	if *token == "" {
 		*token = randomToken(18)
 	}
-	a, e := newApp(dataRoot(*dir), *token, *expiry, *maxMB)
+	if *shareToken == "" {
+		*shareToken = randomToken(18)
+	}
+	a, e := newApp(dataRoot(*dir), *token, *shareToken, *expiry, *maxMB)
 	if e != nil {
 		log.Fatal(e)
 	}
@@ -481,10 +559,10 @@ func main() {
 			}
 		}
 	}()
-	url := fmt.Sprintf("http://localhost:%d/qqq?t=%s", a.port, a.token)
+	url := fmt.Sprintf("http://localhost:%d/qqq?t=%s", a.port, a.ownerToken)
 	fmt.Printf("QQQShare %s\nLocal: %s\n", version, url)
 	for _, ip := range localAddresses() {
-		fmt.Printf("LAN:   http://%s:%d/qqq?t=%s\n", ip, a.port, a.token)
+		fmt.Printf("LAN:   http://%s:%d/qqq?t=%s\n", ip, a.port, a.shareToken)
 	}
 	fmt.Printf("Shared: %s\n", a.shared)
 	if !*noOpen {

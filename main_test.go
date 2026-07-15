@@ -28,11 +28,11 @@ func TestCleanName(t *testing.T) {
 }
 func TestUploadExpire(t *testing.T) {
 	root := t.TempDir()
-	a, e := newApp(root, "secret", time.Second, 1)
+	a, e := newApp(root, "owner", "secret", time.Second, 1)
 	if e != nil {
 		t.Fatal(e)
 	}
-	r := httptest.NewRequest("POST", "/api/upload?name=a.txt&t=secret", strings.NewReader("hello"))
+	r := httptest.NewRequest("POST", "/api/upload?name=a.txt&t=owner", strings.NewReader("hello"))
 	w := httptest.NewRecorder()
 	a.handler().ServeHTTP(w, r)
 	if w.Code != 201 {
@@ -54,10 +54,31 @@ func TestUploadExpire(t *testing.T) {
 	}
 }
 func TestRejectsMissingToken(t *testing.T) {
-	a, _ := newApp(t.TempDir(), "secret", time.Minute, 1)
+	a, _ := newApp(t.TempDir(), "owner", "secret", time.Minute, 1)
 	w := httptest.NewRecorder()
 	a.handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/files", nil))
 	if w.Code != 403 {
 		t.Fatalf("got %d", w.Code)
+	}
+}
+
+func TestReaderCannotUploadAndOwnerCanRevoke(t *testing.T) {
+	a, _ := newApp(t.TempDir(), "owner", "reader", time.Minute, 1)
+	h := a.handler()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/api/upload?name=a.txt&t=reader", strings.NewReader("x")))
+	if w.Code != 403 {
+		t.Fatalf("reader upload got %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/api/upload?name=a.txt&t=owner", strings.NewReader("x")))
+	if w.Code != 201 {
+		t.Fatalf("owner upload got %d", w.Code)
+	}
+	id := a.list()[0].ID
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("DELETE", "/api/files/"+id+"?t=owner", nil))
+	if w.Code != 200 || len(a.list()) != 0 {
+		t.Fatalf("revoke got %d", w.Code)
 	}
 }
