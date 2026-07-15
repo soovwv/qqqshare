@@ -2,7 +2,15 @@
 
 QQQShare is intended for trusted private LANs. Do not expose its port through router forwarding or a public tunnel.
 
-Report vulnerabilities privately through the repository security advisory feature. Do not include real shared URLs or access tokens in public issues.
+## Supported versions
+
+Security fixes are provided for the latest published release only. Development builds and older releases may receive fixes at the maintainer's discretion.
+
+## Reporting a vulnerability
+
+Use [GitHub private vulnerability reporting](https://github.com/soovwv/qqqshare/security/advisories/new). Do not open a public issue and do not include real shared URLs, owner tokens, personal file names, or confidential file contents.
+
+Include the affected version and operating system, impact, safe reproduction steps, and any suggested mitigation. The maintainer will acknowledge the report when reasonably possible, investigate it privately, and coordinate disclosure after a fix or mitigation is available. Please avoid public disclosure while the report is being assessed.
 
 ## Defaults
 
@@ -14,3 +22,10 @@ Report vulnerabilities privately through the repository security advisory featur
 - Transport is currently plain HTTP; use only on a trusted private LAN
 - Treat owner URLs as secrets and never paste them into shared chats or public logs
 - Browser responses disable MIME sniffing, framing, and referrer leakage
+
+## Out of scope
+
+- Use on public or hostile networks without an additional secure transport
+- Exposure through port forwarding, a public tunnel, reverse proxy, or unsupported relay
+- Availability issues caused by local firewall, router, or network isolation policies
+- Social engineering that convinces a user to reveal an owner URL or share a sensitive file

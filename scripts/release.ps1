@@ -22,6 +22,11 @@ $winArm = Join-Path $dist "QQQShare-Windows-arm64"
 New-Item -ItemType Directory -Force -Path $win64,$winArm | Out-Null
 Build-Go "windows" "amd64" (Join-Path $win64 "QQQShare.exe")
 Build-Go "windows" "arm64" (Join-Path $winArm "QQQShare.exe")
+foreach ($folder in @($win64,$winArm)) {
+  Copy-Item (Join-Path $root "LICENSE") (Join-Path $folder "LICENSE.txt")
+  Copy-Item (Join-Path $root "THIRD_PARTY_NOTICES.md") (Join-Path $folder "THIRD_PARTY_NOTICES.md")
+  Copy-Item (Join-Path $root "README.md") (Join-Path $folder "README.md")
+}
 Compress-Archive -Path "$win64\*" -DestinationPath "$win64.zip"
 Compress-Archive -Path "$winArm\*" -DestinationPath "$winArm.zip"
 
@@ -32,6 +37,8 @@ foreach ($arch in @("amd64","arm64")) {
   New-Item -ItemType Directory -Force -Path $macos,$resources | Out-Null
   Build-Go "darwin" $arch (Join-Path $macos "QQQShare")
   Copy-Item (Join-Path $root "assets\app-icon.icns") (Join-Path $resources "AppIcon.icns")
+  Copy-Item (Join-Path $root "LICENSE") (Join-Path $resources "LICENSE.txt")
+  Copy-Item (Join-Path $root "THIRD_PARTY_NOTICES.md") (Join-Path $resources "THIRD_PARTY_NOTICES.md")
   $plist=(Get-Content -Raw (Join-Path $root "packaging\Info.plist")).Replace("__VERSION__",$Version)
   Set-Content -LiteralPath (Join-Path $bundle "Contents\Info.plist") -Value $plist -Encoding UTF8
   Compress-Archive -Path $bundle -DestinationPath (Join-Path $dist "QQQShare-macOS-$label.zip")

@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible QQQShare problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include active URLs, tokens, private file names, or sensitive logs. Report vulnerabilities privately using SECURITY.md."
+  - type: input
+    id: version
+    attributes:
+      label: QQQShare version
+      placeholder: v0.3.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows x64, Windows ARM64, macOS Intel, macOS Apple Silicon, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use safe placeholder paths, addresses, and tokens.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed active share URLs, tokens, personal file names, and sensitive data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

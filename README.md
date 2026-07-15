@@ -1,5 +1,8 @@
 # QQQShare
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 **사람과 AI를 위한 만료형 아티팩트 교환 도구**
 
 Publish. Verify. Expire.
@@ -89,4 +92,11 @@ GitHub Actions는 태그를 푸시하면 Windows x64/ARM64와 macOS Intel/Apple 
 
 동일한 QQQShare Core 위에 MCP 서버, Claude/Codex Skill, npm/Python 래퍼를 얇게 제공할 예정입니다. 핵심 도구 계약은 `publish`, `inspect`, `receive`, `revoke`입니다.
 
-MIT License
+## 오픈소스
+
+QQQShare는 [MIT License](LICENSE)로 공개됩니다. 상업적 사용, 수정, 재배포가 가능하며 라이선스와 저작권 고지를 유지해야 합니다. 외부 구성요소의 고지는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요.
+
+- 기여 방법: [CONTRIBUTING.md](CONTRIBUTING.md)
+- 커뮤니티 행동강령: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- 지원 범위: [SUPPORT.md](SUPPORT.md)
+- 보안 신고: [SECURITY.md](SECURITY.md)
