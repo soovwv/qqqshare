@@ -1,0 +1,4 @@
+.qqqshare/
+dist/
+*.log
+.tools/
