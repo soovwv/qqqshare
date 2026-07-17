@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -28,7 +29,7 @@ func TestCleanName(t *testing.T) {
 }
 func TestUploadExpire(t *testing.T) {
 	root := t.TempDir()
-	a, e := newApp(root, "owner", "secret", time.Second, 1)
+	a, e := newApp(root, "owner", "secret", "test", time.Second, 1, false)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -54,7 +55,7 @@ func TestUploadExpire(t *testing.T) {
 	}
 }
 func TestRejectsMissingToken(t *testing.T) {
-	a, _ := newApp(t.TempDir(), "owner", "secret", time.Minute, 1)
+	a, _ := newApp(t.TempDir(), "owner", "secret", "test", time.Minute, 1, false)
 	w := httptest.NewRecorder()
 	a.handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/files", nil))
 	if w.Code != 403 {
@@ -63,7 +64,7 @@ func TestRejectsMissingToken(t *testing.T) {
 }
 
 func TestReaderCannotUploadAndOwnerCanRevoke(t *testing.T) {
-	a, _ := newApp(t.TempDir(), "owner", "reader", time.Minute, 1)
+	a, _ := newApp(t.TempDir(), "owner", "reader", "test", time.Minute, 1, false)
 	h := a.handler()
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("POST", "/api/upload?name=a.txt&t=reader", strings.NewReader("x")))
@@ -80,5 +81,64 @@ func TestReaderCannotUploadAndOwnerCanRevoke(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest("DELETE", "/api/files/"+id+"?t=owner", nil))
 	if w.Code != 200 || len(a.list()) != 0 {
 		t.Fatalf("revoke got %d", w.Code)
+	}
+}
+
+func TestOneTimeDownloadIsConsumed(t *testing.T) {
+	a, _ := newApp(t.TempDir(), "owner", "reader", "once-test", time.Minute, 1, true)
+	h := a.handler()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/api/upload?name=once.txt&t=owner", strings.NewReader("one")))
+	if w.Code != 201 {
+		t.Fatalf("upload got %d", w.Code)
+	}
+	id := a.list()[0].ID
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/download/"+id+"?t=reader", nil))
+	if w.Code != 200 || w.Body.String() != "one" {
+		t.Fatalf("download got %d %q", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/download/"+id+"?t=reader", nil))
+	if w.Code != 404 {
+		t.Fatalf("second download got %d", w.Code)
+	}
+}
+
+func TestStructuredAPIError(t *testing.T) {
+	a, _ := newApp(t.TempDir(), "owner", "reader", "test", time.Minute, 1, false)
+	w := httptest.NewRecorder()
+	a.handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/files?t=bad", nil))
+	if w.Code != 403 || !strings.Contains(w.Body.String(), `"schema":"qqqshare-error/v1"`) || !strings.Contains(w.Body.String(), `"code":"invalid_token"`) {
+		t.Fatalf("unexpected error: %s", w.Body.String())
+	}
+}
+
+func TestArtifactManifestUsesConfiguredID(t *testing.T) {
+	a, _ := newApp(t.TempDir(), "owner", "reader", "art_configured", time.Minute, 1, false)
+	w := httptest.NewRecorder()
+	a.handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/artifact?t=reader", nil))
+	if w.Code != 200 {
+		t.Fatalf("got %d", w.Code)
+	}
+	var info artifactInfo
+	if json.Unmarshal(w.Body.Bytes(), &info) != nil || info.ArtifactID != "art_configured" {
+		t.Fatalf("manifest: %s", w.Body.String())
+	}
+}
+
+func TestRegistryRoundTripAndExpiry(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	entry := registryEntry{Schema: "qqqshare-registry/v1", ArtifactID: "art_test", URL: "http://192.168.0.2/qqq?t=reader", OwnerURL: "http://127.0.0.1:1/qqq?t=owner", Scope: "lan", CreatedAt: 1, ExpiresAt: time.Now().Add(-time.Second).UnixMilli(), Status: "active"}
+	if e := saveRegistryEntry(entry); e != nil {
+		t.Fatal(e)
+	}
+	got, ok := loadRegistryEntry("art_test")
+	if !ok || got.OwnerURL != entry.OwnerURL {
+		t.Fatalf("registry round trip: %#v", got)
+	}
+	items := registryEntries()
+	if len(items) != 1 || items[0].Status != "expired" {
+		t.Fatalf("registry entries: %#v", items)
 	}
 }
