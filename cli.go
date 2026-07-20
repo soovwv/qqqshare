@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -26,6 +27,33 @@ type artifactInfo struct {
 	FileCount  int     `json:"fileCount"`
 	TotalSize  int64   `json:"totalSize"`
 	ExpiresAt  int64   `json:"expiresAt"`
+}
+
+type registryEntry struct {
+	Schema     string `json:"schema"`
+	ArtifactID string `json:"artifactId"`
+	URL        string `json:"url"`
+	OwnerURL   string `json:"ownerUrl,omitempty"`
+	Scope      string `json:"scope"`
+	CreatedAt  int64  `json:"createdAt"`
+	ExpiresAt  int64  `json:"expiresAt"`
+	OneTime    bool   `json:"oneTime"`
+	Status     string `json:"status"`
+}
+
+type registryView struct {
+	Schema     string `json:"schema"`
+	ArtifactID string `json:"artifactId"`
+	URL        string `json:"url"`
+	Scope      string `json:"scope"`
+	CreatedAt  int64  `json:"createdAt"`
+	ExpiresAt  int64  `json:"expiresAt"`
+	OneTime    bool   `json:"oneTime"`
+	Status     string `json:"status"`
+}
+
+func (e registryEntry) view() registryView {
+	return registryView{Schema: e.Schema, ArtifactID: e.ArtifactID, URL: e.URL, Scope: e.Scope, CreatedAt: e.CreatedAt, ExpiresAt: e.ExpiresAt, OneTime: e.OneTime, Status: e.Status}
 }
 
 func cli() (bool, int) {
@@ -41,6 +69,10 @@ func cli() (bool, int) {
 		return true, runReceive(os.Args[2:])
 	case "revoke":
 		return true, runRevoke(os.Args[2:])
+	case "list":
+		return true, runList(os.Args[2:])
+	case "status":
+		return true, runStatus(os.Args[2:])
 	case "serve":
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 		return false, 0
@@ -53,10 +85,12 @@ func cli() (bool, int) {
 
 func usage() {
 	fmt.Println(`QQQShare
-  qqqshare publish <files...> [--expires 5m] [--json]
+  qqqshare publish <files...> [--expires 5m] [--once] [--json]
   qqqshare inspect <url> [--json]
   qqqshare receive <url> [--output DIR] [--json]
-  qqqshare revoke <owner-url> [--json]
+  qqqshare list [--json]
+  qqqshare status <artifact-id> [--json]
+  qqqshare revoke <artifact-id|owner-url> [--json]
   qqqshare serve [desktop server options]`)
 }
 
@@ -65,6 +99,7 @@ func runPublish(args []string) int {
 	expiry := set.Duration("expires", 5*time.Minute, "share duration")
 	asJSON := set.Bool("json", false, "JSON output")
 	maxMB := set.Int64("max-mb", 2048, "upload limit")
+	oneTime := set.Bool("once", false, "expire each file after its first download attempt")
 	if e := set.Parse(args); e != nil {
 		return 2
 	}
@@ -120,7 +155,11 @@ func runPublish(args []string) int {
 	shareToken := randomToken(18)
 	exe, _ := os.Executable()
 	logFile, _ := os.OpenFile(filepath.Join(root, "server.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	cmd := exec.Command(exe, "serve", "--no-open", "--port", fmt.Sprint(port), "--token", token, "--share-token", shareToken, "--expires", expiry.String(), "--dir", root, "--max-mb", fmt.Sprint(*maxMB), "--exit-after", (*expiry + 30*time.Second).String())
+	cmdArgs := []string{"serve", "--no-open", "--port", fmt.Sprint(port), "--token", token, "--share-token", shareToken, "--artifact-id", id, "--expires", expiry.String(), "--dir", root, "--max-mb", fmt.Sprint(*maxMB), "--exit-after", (*expiry + 30*time.Second).String()}
+	if *oneTime {
+		cmdArgs = append(cmdArgs, "--once")
+	}
+	cmd := exec.Command(exe, cmdArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if e = cmd.Start(); e != nil {
@@ -152,7 +191,12 @@ func runPublish(args []string) int {
 	}
 	shareURL := fmt.Sprintf("http://%s:%d/qqq?t=%s", ip, port, shareToken)
 	ownerURL := fmt.Sprintf("http://127.0.0.1:%d/qqq?t=%s", port, token)
-	result := map[string]any{"schema": "qqqshare-publish/v1", "artifactId": id, "url": shareURL, "ownerUrl": ownerURL, "scope": "lan", "expiresAt": time.Now().Add(*expiry).UnixMilli()}
+	now := time.Now()
+	entry := registryEntry{Schema: "qqqshare-registry/v1", ArtifactID: id, URL: shareURL, OwnerURL: ownerURL, Scope: "lan", CreatedAt: now.UnixMilli(), ExpiresAt: now.Add(*expiry).UnixMilli(), OneTime: *oneTime, Status: "active"}
+	if e = saveRegistryEntry(entry); e != nil {
+		fmt.Fprintln(os.Stderr, "warning: registry:", e)
+	}
+	result := map[string]any{"schema": "qqqshare-publish/v1", "artifactId": id, "url": shareURL, "scope": "lan", "createdAt": entry.CreatedAt, "expiresAt": entry.ExpiresAt, "oneTime": *oneTime}
 	if *asJSON {
 		_ = json.NewEncoder(os.Stdout).Encode(result)
 	} else {
@@ -165,10 +209,15 @@ func runRevoke(args []string) int {
 	set := flag.NewFlagSet("revoke", flag.ContinueOnError)
 	asJSON := set.Bool("json", false, "JSON output")
 	if set.Parse(args) != nil || set.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: qqqshare revoke <owner-url>")
+		fmt.Fprintln(os.Stderr, "usage: qqqshare revoke <artifact-id|owner-url>")
 		return 2
 	}
-	base, token, e := artifactEndpoint(set.Arg(0))
+	target := set.Arg(0)
+	entry, found := loadRegistryEntry(target)
+	if found {
+		target = entry.OwnerURL
+	}
+	base, token, e := artifactEndpoint(target)
 	if e != nil {
 		fmt.Fprintln(os.Stderr, e)
 		return 1
@@ -184,11 +233,139 @@ func runRevoke(args []string) int {
 		fmt.Fprintln(os.Stderr, r.Status)
 		return 1
 	}
-	result := map[string]any{"schema": "qqqshare-revoke/v1", "revoked": true}
+	if found {
+		entry.Status = "revoked"
+		_ = saveRegistryEntry(entry)
+	}
+	result := map[string]any{"schema": "qqqshare-revoke/v1", "artifactId": entry.ArtifactID, "revoked": true}
 	if *asJSON {
 		_ = json.NewEncoder(os.Stdout).Encode(result)
 	} else {
 		fmt.Println("Share revoked")
+	}
+	return 0
+}
+
+func registryDir() string { return filepath.Join(dataRoot(""), "Registry") }
+
+func registryPath(id string) string { return filepath.Join(registryDir(), cleanName(id)+".json") }
+
+func saveRegistryEntry(entry registryEntry) error {
+	if e := os.MkdirAll(registryDir(), 0700); e != nil {
+		return e
+	}
+	b, e := json.MarshalIndent(entry, "", "  ")
+	if e != nil {
+		return e
+	}
+	tmp := registryPath(entry.ArtifactID) + ".tmp"
+	if e = os.WriteFile(tmp, append(b, '\n'), 0600); e != nil {
+		return e
+	}
+	target := registryPath(entry.ArtifactID)
+	_ = os.Remove(target)
+	return os.Rename(tmp, target)
+}
+
+func loadRegistryEntry(id string) (registryEntry, bool) {
+	b, e := os.ReadFile(registryPath(id))
+	if e != nil {
+		return registryEntry{}, false
+	}
+	var entry registryEntry
+	if json.Unmarshal(b, &entry) != nil || entry.ArtifactID == "" {
+		return registryEntry{}, false
+	}
+	return entry, true
+}
+
+func registryEntries() []registryEntry {
+	entries, _ := os.ReadDir(registryDir())
+	out := []registryEntry{}
+	for _, f := range entries {
+		if f.IsDir() || filepath.Ext(f.Name()) != ".json" {
+			continue
+		}
+		b, e := os.ReadFile(filepath.Join(registryDir(), f.Name()))
+		if e != nil {
+			continue
+		}
+		var entry registryEntry
+		if json.Unmarshal(b, &entry) != nil {
+			continue
+		}
+		refreshEntryStatus(&entry)
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	return out
+}
+
+func refreshEntryStatus(entry *registryEntry) {
+	if entry.Status != "active" {
+		return
+	}
+	if time.Now().UnixMilli() >= entry.ExpiresAt {
+		entry.Status = "expired"
+		_ = saveRegistryEntry(*entry)
+		return
+	}
+	u, e := url.Parse(entry.OwnerURL)
+	if e != nil {
+		return
+	}
+	r, e := (&http.Client{Timeout: 350 * time.Millisecond}).Get(u.Scheme + "://" + u.Host + "/health")
+	if e != nil {
+		entry.Status = "stopped"
+		_ = saveRegistryEntry(*entry)
+		return
+	}
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		entry.Status = "stopped"
+		_ = saveRegistryEntry(*entry)
+	}
+}
+
+func runList(args []string) int {
+	set := flag.NewFlagSet("list", flag.ContinueOnError)
+	asJSON := set.Bool("json", false, "JSON output")
+	if set.Parse(args) != nil || set.NArg() != 0 {
+		return 2
+	}
+	entries := registryEntries()
+	views := make([]registryView, 0, len(entries))
+	for _, entry := range entries {
+		views = append(views, entry.view())
+	}
+	result := map[string]any{"schema": "qqqshare-list/v1", "artifacts": views, "count": len(views)}
+	if *asJSON {
+		_ = json.NewEncoder(os.Stdout).Encode(result)
+		return 0
+	}
+	for _, e := range entries {
+		fmt.Printf("%s  %-8s  expires %s  %s\n", e.ArtifactID, e.Status, time.UnixMilli(e.ExpiresAt).Format(time.RFC3339), e.URL)
+	}
+	return 0
+}
+
+func runStatus(args []string) int {
+	set := flag.NewFlagSet("status", flag.ContinueOnError)
+	asJSON := set.Bool("json", false, "JSON output")
+	if set.Parse(args) != nil || set.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: qqqshare status <artifact-id>")
+		return 2
+	}
+	entry, ok := loadRegistryEntry(set.Arg(0))
+	if !ok {
+		fmt.Fprintln(os.Stderr, "artifact not found")
+		return 1
+	}
+	refreshEntryStatus(&entry)
+	if *asJSON {
+		_ = json.NewEncoder(os.Stdout).Encode(entry.view())
+	} else {
+		fmt.Printf("%s: %s\nURL: %s\nExpires: %s\n", entry.ArtifactID, entry.Status, entry.URL, time.UnixMilli(entry.ExpiresAt).Format(time.RFC3339))
 	}
 	return 0
 }

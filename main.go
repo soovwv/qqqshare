@@ -43,6 +43,7 @@ type item struct {
 	ExpiresAt int64  `json:"expiresAt"`
 	SHA256    string `json:"sha256"`
 	Downloads int64  `json:"downloads"`
+	OneTime   bool   `json:"oneTime"`
 	path      string
 	active    bool
 }
@@ -54,6 +55,8 @@ type app struct {
 	maxUpload                                     int64
 	files                                         map[string]*item
 	port                                          int
+	artifactID                                    string
+	oneTime                                       bool
 	stop                                          context.CancelFunc
 }
 
@@ -81,8 +84,8 @@ func dataRoot(override string) string {
 	return filepath.Join(h, ".qqqshare")
 }
 
-func newApp(root, ownerToken, shareToken string, duration time.Duration, maxMB int64) (*app, error) {
-	a := &app{root: root, shared: filepath.Join(root, "Shared"), expired: filepath.Join(root, "Expired"), ownerToken: ownerToken, shareToken: shareToken, duration: duration, maxUpload: maxMB << 20, files: map[string]*item{}}
+func newApp(root, ownerToken, shareToken, artifactID string, duration time.Duration, maxMB int64, oneTime bool) (*app, error) {
+	a := &app{root: root, shared: filepath.Join(root, "Shared"), expired: filepath.Join(root, "Expired"), ownerToken: ownerToken, shareToken: shareToken, artifactID: artifactID, duration: duration, maxUpload: maxMB << 20, oneTime: oneTime, files: map[string]*item{}}
 	for _, d := range []string{a.shared, a.expired} {
 		if e := os.MkdirAll(d, 0700); e != nil {
 			return nil, e
@@ -107,8 +110,9 @@ func (a *app) register(path, name string) (*item, error) {
 	}
 	_ = f.Close()
 	now := time.Now()
-	i := &item{ID: randomToken(12), Name: name, Size: st.Size(), CreatedAt: now.UnixMilli(), ExpiresAt: now.Add(a.duration).UnixMilli(), SHA256: hex.EncodeToString(h.Sum(nil)), path: path, active: true}
 	a.mu.Lock()
+	duration, oneTime := a.duration, a.oneTime
+	i := &item{ID: randomToken(12), Name: name, Size: st.Size(), CreatedAt: now.UnixMilli(), ExpiresAt: now.Add(duration).UnixMilli(), SHA256: hex.EncodeToString(h.Sum(nil)), OneTime: oneTime, path: path, active: true}
 	a.files[path] = i
 	a.mu.Unlock()
 	return i, nil
@@ -222,6 +226,10 @@ func jsonOut(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+func jsonError(w http.ResponseWriter, status int, code, message string) {
+	jsonOut(w, status, map[string]any{"schema": "qqqshare-error/v1", "error": map[string]string{"code": code, "message": message}})
+}
 func (a *app) role(r *http.Request) string {
 	t := r.URL.Query().Get("t")
 	if t != "" && t == a.ownerToken {
@@ -270,7 +278,7 @@ func (a *app) handler() http.Handler {
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		role := a.role(r)
 		if role == "" {
-			jsonOut(w, 403, map[string]string{"error": "Invalid share token"})
+			jsonError(w, 403, "invalid_token", "Invalid share token")
 			return
 		}
 		switch {
@@ -283,8 +291,9 @@ func (a *app) handler() http.Handler {
 		case r.Method == "GET" && r.URL.Path == "/api/files":
 			a.mu.RLock()
 			d := int(a.duration.Seconds())
+			once := a.oneTime
 			a.mu.RUnlock()
-			jsonOut(w, 200, map[string]any{"duration": d, "files": a.list()})
+			jsonOut(w, 200, map[string]any{"duration": d, "oneTime": once, "files": a.list()})
 		case r.Method == "GET" && r.URL.Path == "/api/qr":
 			ip := "127.0.0.1"
 			if xs := localAddresses(); len(xs) > 0 {
@@ -292,7 +301,7 @@ func (a *app) handler() http.Handler {
 			}
 			png, e := qrcode.Encode(fmt.Sprintf("http://%s:%d/qqq?t=%s", ip, a.port, a.shareToken), qrcode.Medium, 256)
 			if e != nil {
-				jsonOut(w, 500, map[string]string{"error": e.Error()})
+				jsonError(w, 500, "qr_failed", "Could not generate QR code")
 				return
 			}
 			w.Header().Set("Content-Type", "image/png")
@@ -308,42 +317,47 @@ func (a *app) handler() http.Handler {
 					expires = i.ExpiresAt
 				}
 			}
-			jsonOut(w, 200, map[string]any{"schema": "qqqshare-artifact/v1", "artifactId": "live", "scope": "lan", "files": files, "fileCount": len(files), "totalSize": total, "expiresAt": expires})
+			a.mu.RLock()
+			once := a.oneTime
+			a.mu.RUnlock()
+			jsonOut(w, 200, map[string]any{"schema": "qqqshare-artifact/v1", "artifactId": a.artifactID, "scope": "lan", "oneTime": once, "files": files, "fileCount": len(files), "totalSize": total, "expiresAt": expires})
 		case r.Method == "PUT" && r.URL.Path == "/api/settings":
 			if role != "owner" {
-				jsonOut(w, 403, map[string]string{"error": "Owner token required"})
+				jsonError(w, 403, "owner_required", "Owner token required")
 				return
 			}
 			var body struct {
-				Duration int `json:"duration"`
+				Duration int  `json:"duration"`
+				OneTime  bool `json:"oneTime"`
 			}
 			if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&body) != nil || body.Duration < 1 || body.Duration > 86400 {
-				jsonOut(w, 400, map[string]string{"error": "Duration must be 1-86400 seconds"})
+				jsonError(w, 400, "invalid_duration", "Duration must be 1-86400 seconds")
 				return
 			}
 			a.mu.Lock()
 			a.duration = time.Duration(body.Duration) * time.Second
+			a.oneTime = body.OneTime
 			a.mu.Unlock()
 			jsonOut(w, 200, body)
 		case r.Method == "POST" && r.URL.Path == "/api/upload":
 			if role != "owner" {
-				jsonOut(w, 403, map[string]string{"error": "Owner token required"})
+				jsonError(w, 403, "owner_required", "Owner token required")
 				return
 			}
 			a.upload(w, r)
 		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/api/files/"):
 			if role != "owner" {
-				jsonOut(w, 403, map[string]string{"error": "Owner token required"})
+				jsonError(w, 403, "owner_required", "Owner token required")
 				return
 			}
 			if !a.revoke(strings.TrimPrefix(r.URL.Path, "/api/files/")) {
-				jsonOut(w, 404, map[string]string{"error": "File expired or missing"})
+				jsonError(w, 404, "file_unavailable", "File expired or missing")
 				return
 			}
 			jsonOut(w, 200, map[string]bool{"revoked": true})
 		case r.Method == "POST" && r.URL.Path == "/api/stop":
 			if role != "owner" {
-				jsonOut(w, 403, map[string]string{"error": "Owner token required"})
+				jsonError(w, 403, "owner_required", "Owner token required")
 				return
 			}
 			jsonOut(w, 200, map[string]bool{"stopping": true})
@@ -353,7 +367,7 @@ func (a *app) handler() http.Handler {
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/download/"):
 			a.download(w, r)
 		default:
-			jsonOut(w, 404, map[string]string{"error": "Not found"})
+			jsonError(w, 404, "not_found", "Not found")
 		}
 	})
 	return securityHeaders(mux)
@@ -365,7 +379,7 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 	tmp := dst + ".uploading-" + randomToken(6)
 	f, e := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
-		jsonOut(w, 500, map[string]string{"error": e.Error()})
+		jsonError(w, 500, "staging_failed", "Could not create upload staging file")
 		return
 	}
 	reader := http.MaxBytesReader(w, r.Body, a.maxUpload)
@@ -373,17 +387,17 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 	closeErr := f.Close()
 	if e != nil || closeErr != nil {
 		_ = os.Remove(tmp)
-		jsonOut(w, 413, map[string]string{"error": "Upload failed or exceeded limit"})
+		jsonError(w, 413, "upload_rejected", "Upload failed or exceeded limit")
 		return
 	}
 	if e = os.Rename(tmp, dst); e != nil {
 		_ = os.Remove(tmp)
-		jsonOut(w, 500, map[string]string{"error": e.Error()})
+		jsonError(w, 500, "commit_failed", "Could not commit uploaded file")
 		return
 	}
 	i, e := a.register(dst, filepath.Base(dst))
 	if e != nil {
-		jsonOut(w, 500, map[string]string{"error": e.Error()})
+		jsonError(w, 500, "register_failed", "Could not register uploaded file")
 		return
 	}
 	jsonOut(w, 201, map[string]any{"id": i.ID, "expiresAt": i.ExpiresAt})
@@ -392,12 +406,22 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 func (a *app) download(w http.ResponseWriter, r *http.Request) {
 	i := a.find(strings.TrimPrefix(r.URL.Path, "/api/download/"))
 	if i == nil {
-		jsonOut(w, 404, map[string]string{"error": "File expired or missing"})
+		jsonError(w, 404, "file_unavailable", "File expired or missing")
 		return
+	}
+	if i.OneTime {
+		a.mu.Lock()
+		if !i.active {
+			a.mu.Unlock()
+			jsonError(w, 404, "file_unavailable", "File expired or missing")
+			return
+		}
+		i.active = false
+		a.mu.Unlock()
 	}
 	f, e := os.Open(i.path)
 	if e != nil {
-		jsonOut(w, 404, map[string]string{"error": "File missing"})
+		jsonError(w, 404, "file_missing", "File missing")
 		return
 	}
 	defer f.Close()
@@ -410,7 +434,22 @@ func (a *app) download(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": i.Name}))
 	w.Header().Set("Content-Length", strconv.FormatInt(i.Size, 10))
-	_, _ = io.Copy(w, f)
+	_, copyErr := io.Copy(w, f)
+	if i.OneTime {
+		a.archive(i, "one-time download")
+	}
+	if copyErr != nil {
+		log.Printf("download %q: %v", i.Name, copyErr)
+	}
+}
+
+func (a *app) archive(i *item, reason string) {
+	dst := uniquePath(a.expired, i.Name)
+	if e := os.Rename(i.path, dst); e != nil {
+		log.Printf("archive %q after %s: %v", i.Name, reason, e)
+	} else {
+		i.path = dst
+	}
 }
 
 func (a *app) revoke(id string) bool {
@@ -516,6 +555,8 @@ func main() {
 	exitAfter := flag.Duration("exit-after", 0, "stop server automatically")
 	token := flag.String("token", "", "fixed access token")
 	shareToken := flag.String("share-token", "", "fixed read-only share token")
+	artifactID := flag.String("artifact-id", "desktop", "artifact identifier")
+	oneTime := flag.Bool("once", false, "expire each file after its first download attempt")
 	flag.Parse()
 	if *expiry < time.Second || *expiry > 24*time.Hour || *maxMB < 1 {
 		log.Fatal("invalid expiration or upload limit")
@@ -526,7 +567,7 @@ func main() {
 	if *shareToken == "" {
 		*shareToken = randomToken(18)
 	}
-	a, e := newApp(dataRoot(*dir), *token, *shareToken, *expiry, *maxMB)
+	a, e := newApp(dataRoot(*dir), *token, *shareToken, *artifactID, *expiry, *maxMB, *oneTime)
 	if e != nil {
 		log.Fatal(e)
 	}
