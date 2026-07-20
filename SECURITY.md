@@ -17,6 +17,7 @@ Include the affected version and operating system, impact, safe reproduction ste
 - Random high port and separate random 144-bit owner/read-only tokens per launch
 - Shared URLs can only list and download; upload, settings, revoke, and stop require the owner token
 - Files expire after one minute by default
+- Optional one-time mode atomically blocks subsequent download attempts
 - Uploads use a size limit, temporary file, sanitized basename, and atomic rename
 - New downloads are blocked before expired files are archived
 - Transport is currently plain HTTP; use only on a trusted private LAN

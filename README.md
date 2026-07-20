@@ -24,8 +24,15 @@ QQQShare는 로컬 파일을 같은 네트워크에서 잠시 받을 수 있는 
 ## AI·CLI 사용법
 
 ```powershell
-# 파일 또는 폴더를 5분간 게시 (`ownerUrl`은 외부에 공유하지 마세요)
+# 파일 또는 폴더를 5분간 게시
 QQQShare.exe publish --expires 5m --json .\report.pdf .\results
+
+# 파일별 첫 다운로드 시도 후 폐기되는 1회용 게시
+QQQShare.exe publish --expires 5m --once --json .\secret.pdf
+
+# 이 PC가 생성한 게시물 조회
+QQQShare.exe list --json
+QQQShare.exe status --json art_example
 
 # 다른 기기/에이전트에서 메타데이터 확인
 QQQShare.exe inspect --json "http://192.168.0.28:46327/qqq?t=..."
@@ -34,7 +41,7 @@ QQQShare.exe inspect --json "http://192.168.0.28:46327/qqq?t=..."
 QQQShare.exe receive --output .\received --json "http://192.168.0.28:46327/qqq?t=..."
 
 # 게시 프로세스 즉시 종료
-QQQShare.exe revoke --json "http://127.0.0.1:46327/qqq?t=OWNER_TOKEN"
+QQQShare.exe revoke --json art_example
 ```
 
 `publish --json` 결과 예시:
@@ -44,15 +51,16 @@ QQQShare.exe revoke --json "http://127.0.0.1:46327/qqq?t=OWNER_TOKEN"
   "schema": "qqqshare-publish/v1",
   "artifactId": "art_example",
   "url": "http://192.168.0.28:46327/qqq?t=READ_ONLY_TOKEN",
-  "ownerUrl": "http://127.0.0.1:46327/qqq?t=OWNER_TOKEN",
   "scope": "lan",
   "expiresAt": 1784097000000
 }
 ```
 
 - `url`: 전달 가능한 읽기 전용 URL
-- `ownerUrl`: 로컬 폐기용 관리 URL. 채팅이나 로그에 공유하지 마세요.
+- `artifactId`: `list`, `status`, `revoke`에서 사용하는 로컬 관리 ID
+- 관리 토큰은 로컬 레지스트리에만 저장되고 CLI JSON에는 출력되지 않음
 - `scope`: 현재 MVP는 `lan`만 지원
+- `--once`: 각 파일의 첫 다운로드 시도 후 즉시 비활성화
 - 공유 시간: `1s`부터 `24h`
 - 폴더: 게시 전에 ZIP으로 묶음
 - 수신: 임시 `.part` 파일에 저장하고 SHA-256 검증 후 완료
@@ -90,7 +98,7 @@ GitHub Actions는 태그를 푸시하면 Windows x64/ARM64와 macOS Intel/Apple 
 
 ## 향후 인터페이스
 
-동일한 QQQShare Core 위에 MCP 서버, Claude/Codex Skill, npm/Python 래퍼를 얇게 제공할 예정입니다. 핵심 도구 계약은 `publish`, `inspect`, `receive`, `revoke`입니다.
+동일한 QQQShare Core 위에 MCP 서버, Claude/Codex Skill, npm/Python 래퍼를 얇게 제공할 예정입니다. 핵심 도구 계약은 `publish`, `list`, `status`, `inspect`, `receive`, `revoke`입니다. 제품 현황과 경쟁 분석, 단계별 계획은 [docs/PRODUCT.md](docs/PRODUCT.md)를 참고하세요.
 
 ## 오픈소스
 
